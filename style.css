@@ -133,6 +133,8 @@ details summary { cursor: pointer; color: var(--muted); padding: 6px 0; }
 .switch input:checked { background: var(--accent); }
 .switch input:checked::after { transform: translateX(18px); }
 
+.motion-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 0 10px 58px; }
+
 /* ---------- full-screen focus timer ---------- */
 .focus {
   position: fixed; inset: 0; z-index: 10; background: #000;

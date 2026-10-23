@@ -162,7 +162,7 @@ function pauseTimer() {
 }
 
 function toggleTimer() {
-  enableMotion(true); // iOS only lets a page ask for the motion sensor from inside a tap
+  enableMotion(); // quiet: only turns the sensor back on if it was allowed before
   if (running()) pauseTimer(); else startTimer();
 }
 
@@ -311,17 +311,33 @@ function onMotion(e) {
   if (s !== motionSideways && Date.now() - motionSince > 600) { motionSideways = s; checkTilt(); }
 }
 
-async function enableMotion(fromTap) {
+const NEEDS_MOTION_PERMISSION = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function';
+
+// iOS only lets a page ask for the motion sensor from inside a tap, and shows a pop-up the first time.
+// `ask` is true only for the Settings button; Start/Resume re-enable it quietly once it was allowed before.
+async function enableMotion(ask = false) {
   if (motionOn || !prefs.tilt || !IS_TOUCH) return;
-  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
-    if (!fromTap) return;
-    try { if (await DeviceMotionEvent.requestPermission() !== 'granted') return; } catch { return; }
+  if (NEEDS_MOTION_PERMISSION) {
+    if (!ask && !prefs.motionGranted) return;
+    try {
+      const granted = await DeviceMotionEvent.requestPermission() === 'granted';
+      if (prefs.motionGranted !== granted) { prefs.motionGranted = granted; save(PREFS_KEY, prefs); }
+      if (!granted) { renderMotionStatus(); return; }
+    } catch { return; } // called outside a tap; try again on the next Start
   }
   window.addEventListener('devicemotion', onMotion);
   motionOn = true;
+  renderMotionStatus();
 }
-// iOS needs a tap before it shows the motion permission (silently granted if allowed before).
-document.addEventListener('click', () => enableMotion(true), { once: true, capture: true });
+
+function renderMotionStatus() {
+  const show = IS_TOUCH && NEEDS_MOTION_PERMISSION && prefs.tilt;
+  $('motionRow').hidden = !show;
+  setText('motionStatus', motionOn ? 'Motion sensor is on.'
+    : prefs.motionGranted === false ? 'Motion access was denied. To allow it again, remove and re-add the app, or clear this site\'s data in Settings → Safari.'
+    : 'Needed only if rotation lock is on.');
+  $('motionBtn').hidden = motionOn;
+}
 
 // --- on the charger: only Chromium browsers expose battery state; Safari does not.
 if (IS_TOUCH && navigator.getBattery) {
@@ -588,6 +604,7 @@ function renderSettings() {
   }
   $('pTilt').checked = prefs.tilt;
   $('pCharger').checked = prefs.charger;
+  renderMotionStatus();
   setText('focusUrl', `${location.origin}${location.pathname}?focus=1`);
 }
 
@@ -638,7 +655,8 @@ $('subjectChips').addEventListener('click', (e) => {
   document.querySelectorAll('#subjectChips .chip').forEach((c) => c.classList.toggle('active', c === b));
 });
 $('toggleBtn').onclick = toggleTimer;
-$('focusBtn').onclick = () => { enableMotion(true); openFocus('manual'); };
+$('focusBtn').onclick = () => { enableMotion(); openFocus('manual'); };
+$('motionBtn').onclick = () => enableMotion(true);
 
 $('todaySessions').addEventListener('click', (e) => {
   const id = e.target.closest('[data-del]')?.dataset.del;
@@ -713,7 +731,7 @@ $('subjectList').addEventListener('click', (e) => {
 
 $('pTilt').onchange = (e) => {
   prefs.tilt = e.target.checked; save(PREFS_KEY, prefs);
-  if (prefs.tilt) enableMotion(true);
+  renderMotionStatus();
 };
 $('pCharger').onchange = (e) => { prefs.charger = e.target.checked; save(PREFS_KEY, prefs); };
 
