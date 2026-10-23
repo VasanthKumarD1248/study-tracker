@@ -225,6 +225,8 @@ function openFocus(reason) {
   const el = $('focus');
   el.hidden = false;
   requestAnimationFrame(() => el.classList.add('show'));
+  Starfield.setRunning(!!running());
+  Starfield.start();
   renderFocus();
   keepAwake(true);
   showControls();
@@ -239,7 +241,7 @@ function closeFocus() {
   clearInterval(driftTimer);
   const el = $('focus');
   el.classList.remove('show', 'controls');
-  setTimeout(() => { if (!focusOpen) el.hidden = true; }, 450);
+  setTimeout(() => { if (!focusOpen) { el.hidden = true; Starfield.stop(); } }, 450);
   keepAwake(!!running());
   renderAll();
 }
@@ -261,6 +263,7 @@ function renderFocus() {
   const t = running();
   const sum = todaySummary();
   $('focus').classList.toggle('paused', !t);
+  Starfield.setRunning(!!t); // stars slow to a drift while paused
   setText('fClock', fmtHMS(sum.total));
   setText('fSubject', t ? subjectById(t.subjectId).name : 'Paused');
   setText('fSub', t ? `This stretch ${fmtHMS(Date.now() - t.start)}` : `Max focus ${fmtHMS(sum.max)}`);

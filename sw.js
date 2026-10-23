@@ -1,6 +1,6 @@
 // Network first, cache as fallback, so the app opens offline but updates show up right away.
-const CACHE = 'study-tracker-v5';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png', 'keepawake.mp4'];
+const CACHE = 'study-tracker-v6';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'stars.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-512.png', 'keepawake.mp4'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));

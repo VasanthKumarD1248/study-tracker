@@ -193,6 +193,7 @@
 
   <!-- Full-screen focus timer -->
   <div class="focus" id="focus" hidden>
+    <canvas id="stars" aria-hidden="true"></canvas>
     <div class="f-body" id="fBody">
       <div class="f-subject" id="fSubject"></div>
       <div class="f-clock" id="fClock">0:00:00</div>
@@ -207,6 +208,7 @@
 
   <video id="keepAwake" src="keepawake.mp4" muted playsinline loop preload="auto" aria-hidden="true"></video>
 
+  <script src="stars.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
