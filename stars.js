@@ -122,7 +122,10 @@ const Starfield = (() => {
     raf = requestAnimationFrame(frame);
   }
 
-  window.addEventListener('resize', () => { if (raf || reducedMotion) { resize(); if (reducedMotion) draw(0, 0); } });
+  const onResize = () => { if (raf || reducedMotion) { resize(); if (reducedMotion) draw(0, 0); } };
+  window.addEventListener('resize', onResize);
+  // iOS can report the old width right after a rotation, so measure again once it settles.
+  window.addEventListener('orientationchange', () => setTimeout(onResize, 350));
 
   return {
     start() {

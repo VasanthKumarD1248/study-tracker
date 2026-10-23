@@ -249,7 +249,7 @@ function closeFocus() {
 // Move the clock a few pixels every minute so a static image never burns into an OLED screen.
 function drift() {
   const r = () => Math.round((Math.random() - 0.5) * 24);
-  $('fBody').style.transform = `translate(${r()}px, ${r()}px)`;
+  $('fBody').style.transform = `translate(calc(-50% + ${r()}px), calc(-50% + ${r()}px))`;
 }
 
 function showControls() {
