@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Study">
+  <title>Study Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="tabs" id="tabs">
+    <button data-view="timer" class="active">Timer</button>
+    <button data-view="day">Day</button>
+    <button data-view="week">Week</button>
+    <button data-view="month">Month</button>
+    <button data-view="settings" aria-label="Settings">⚙</button>
+  </nav>
+
+  <div class="strip">
+    <div class="legend">
+      <span class="l1">0+</span><span class="l2">4+</span><span class="l3">7+</span><span class="l4">10+</span><span class="l5">12+</span>
+    </div>
+    <div id="monthTotal" class="muted"></div>
+  </div>
+
+  <main>
+    <!-- TIMER -->
+    <section id="view-timer" class="view active">
+      <div class="card center">
+        <div class="muted" id="timerLabel">Pick a subject and start</div>
+        <div class="clock" id="clock">0:00:00</div>
+        <div class="subjects" id="subjectChips"></div>
+        <div class="row">
+          <button class="btn primary" id="startBtn">Start</button>
+          <button class="btn" id="stopBtn" disabled>Stop</button>
+        </div>
+        <div class="muted small" id="wakeNote"></div>
+      </div>
+
+      <div class="card">
+        <div class="stats">
+          <div><div class="k">Today</div><div class="v" id="tToday">0:00:00</div></div>
+          <div><div class="k">Max focus</div><div class="v" id="tMax">0:00:00</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Today's sessions</h3>
+        <ul class="sessions" id="todaySessions"></ul>
+        <details>
+          <summary>Add a session by hand</summary>
+          <form id="manualForm" class="form">
+            <label>Subject <select id="mSubject"></select></label>
+            <label>Date <input type="date" id="mDate" required></label>
+            <label>Start <input type="time" id="mStart" required></label>
+            <label>End <input type="time" id="mEnd" required></label>
+            <button class="btn primary" type="submit">Add</button>
+          </form>
+        </details>
+      </div>
+    </section>
+
+    <!-- DAY -->
+    <section id="view-day" class="view">
+      <div class="card">
+        <div class="nav">
+          <button class="btn icon" data-shift="-1">‹</button>
+          <h2 id="dayTitle"></h2>
+          <button class="btn icon" data-shift="1">›</button>
+        </div>
+        <div class="stats">
+          <div><div class="k">Total study time</div><div class="v big" id="dTotal"></div></div>
+          <div><div class="k">Max focus time</div><div class="v big" id="dMax"></div></div>
+          <div><div class="k">Start time</div><div class="v big" id="dStart"></div></div>
+          <div><div class="k">End time</div><div class="v big" id="dEnd"></div></div>
+        </div>
+        <hr>
+        <div class="chartwrap">
+          <div class="chartside">
+            <div class="muted" id="dUpTo"></div>
+            <div class="v big" id="dUpToVal"></div>
+            <div class="key"><span>Today</span><i class="sw today"></i></div>
+            <div class="key"><span>Yesterday</span><i class="sw yest"></i></div>
+          </div>
+          <svg id="cumChart" viewBox="-8 0 316 172"></svg>
+        </div>
+      </div>
+      <div class="card">
+        <div class="donutwrap">
+          <svg id="donut" viewBox="0 0 160 160"></svg>
+          <ul class="breakdown" id="dBreak"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- WEEK -->
+    <section id="view-week" class="view">
+      <div class="card">
+        <div class="nav">
+          <button class="btn icon" data-wshift="-7">‹</button>
+          <h2 id="weekTitle"></h2>
+          <button class="btn icon" data-wshift="7">›</button>
+        </div>
+        <div class="stats">
+          <div><div class="k">Week total</div><div class="v big" id="wTotal"></div></div>
+          <div><div class="k">Daily average</div><div class="v big" id="wAvg"></div></div>
+        </div>
+        <svg id="weekChart" viewBox="0 0 320 200"></svg>
+      </div>
+      <div class="card">
+        <ul class="breakdown" id="wBreak"></ul>
+      </div>
+    </section>
+
+    <!-- MONTH -->
+    <section id="view-month" class="view">
+      <div class="card">
+        <div class="nav">
+          <button class="btn icon" data-mshift="-1">‹</button>
+          <h2 id="monthTitle"></h2>
+          <button class="btn icon" data-mshift="1">›</button>
+        </div>
+        <div class="stats">
+          <div><div class="k">Month total</div><div class="v big" id="mTotal"></div></div>
+          <div><div class="k">Days studied</div><div class="v big" id="mDays"></div></div>
+        </div>
+        <div class="cal" id="calendar"></div>
+      </div>
+      <div class="card">
+        <ul class="breakdown" id="mBreak"></ul>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view">
+      <div class="card">
+        <h3>Subjects</h3>
+        <ul class="sessions" id="subjectList"></ul>
+        <form id="subjectForm" class="form inline">
+          <input id="newSubject" placeholder="New subject" required maxlength="24">
+          <input type="color" id="newColor" value="#7dd3fc">
+          <button class="btn primary" type="submit">Add</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h3>Sync with GitHub</h3>
+        <p class="muted small">Sessions are saved in this browser. To see the same data on your phone and laptop, sync them to a JSON file in a private repo. Use a fine-grained token that can only read and write that one repo (Contents: Read and write).</p>
+        <form id="syncForm" class="form">
+          <label>Owner <input id="gOwner" placeholder="your-github-username"></label>
+          <label>Repo <input id="gRepo" placeholder="study-tracker-data"></label>
+          <label>File path <input id="gPath" placeholder="sessions.json"></label>
+          <label>Token <input id="gToken" type="password" placeholder="github_pat_…" autocomplete="off"></label>
+          <div class="row">
+            <button class="btn primary" type="submit">Save &amp; sync</button>
+            <button class="btn" type="button" id="syncNow">Sync now</button>
+          </div>
+        </form>
+        <div class="muted small" id="syncStatus"></div>
+      </div>
+
+      <div class="card">
+        <h3>Backup</h3>
+        <div class="row">
+          <button class="btn" id="exportBtn">Export JSON</button>
+          <label class="btn">Import JSON <input type="file" id="importFile" accept="application/json" hidden></label>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
