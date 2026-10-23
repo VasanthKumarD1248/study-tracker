@@ -5,14 +5,16 @@ const DAY_START_HOUR = 5;          // a study "day" runs 5:00 to 5:00, like YPT
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
 const DB_KEY = 'st.db';
-const TIMER_KEY = 'st.timer';
 const SYNC_KEY = 'st.sync';
 const VIEW_KEY = 'st.view';
+const PREFS_KEY = 'st.prefs';
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
 
 const $ = (id) => document.getElementById(id);
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = (n) => String(n).padStart(2, '0');
+const setText = (id, t) => { const el = $(id); if (el && el.textContent !== t) el.textContent = t; };
 
 function load(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
@@ -76,20 +78,35 @@ let db = load(DB_KEY, null);
 if (!db) {
   const now = Date.now();
   db = { subjects: DEFAULT_SUBJECTS.map((s) => ({ ...s, updated: now })), sessions: [] };
-  save(DB_KEY, db);
 }
-let timer = load(TIMER_KEY, null); // { subjectId, start }
-let selectedSubject = timer?.subjectId || load('st.subject', null) || liveSubjects()[0]?.id;
+// The running timer lives in db so it syncs between devices. Older versions kept it under its own key.
+if (!db.timer) {
+  const old = load('st.timer', null);
+  db.timer = old ? { running: true, subjectId: old.subjectId, start: old.start, updated: old.start } : { running: false, updated: 0 };
+  try { localStorage.removeItem('st.timer'); } catch {}
+}
+save(DB_KEY, db);
+
+const prefs = { tilt: true, charger: true, ...load(PREFS_KEY, {}) };
+let selectedSubject = load('st.subject', null);
 
 function persist() { save(DB_KEY, db); }
+function running() { return db.timer.running ? db.timer : null; }
 function liveSubjects() { return db.subjects.filter((s) => !s.deleted); }
 function liveSessions() { return db.sessions.filter((s) => !s.deleted); }
 function subjectById(id) { return db.subjects.find((s) => s.id === id) || { id, name: 'Unknown', color: '#888' }; }
+function currentSubject() {
+  const t = running();
+  if (t) return t.subjectId;
+  if (!liveSubjects().some((s) => s.id === selectedSubject)) selectedSubject = liveSubjects()[0]?.id;
+  return selectedSubject;
+}
 
 // Sessions plus the running one, so every stat updates live.
 function allSessions() {
   const list = liveSessions();
-  if (timer) list.push({ id: 'running', subjectId: timer.subjectId, start: timer.start, end: Date.now() });
+  const t = running();
+  if (t) list.push({ id: 'running', subjectId: t.subjectId, start: t.start, end: Date.now() });
   return list;
 }
 
@@ -103,6 +120,7 @@ function clipped(from, to) {
   return out.sort((x, y) => x.start - y.start);
 }
 
+// Total = all study time. Max focus = the longest stretch between Start/Resume and Pause.
 function summarize(from, to) {
   const list = clipped(from, to);
   const bySubject = {};
@@ -115,54 +133,238 @@ function summarize(from, to) {
   }
   return { list, total, max, bySubject, first: list[0]?.start, last: list.length ? Math.max(...list.map((s) => s.end)) : undefined };
 }
+const todaySummary = () => summarize(...dayRange(dayKey(Date.now())));
 
 // ---------- timer ----------
-let wakeLock = null;
-
-async function requestWake() {
-  try {
-    if ('wakeLock' in navigator && timer) wakeLock = await navigator.wakeLock.request('screen');
-  } catch {}
-}
-
 function startTimer() {
-  if (timer || !selectedSubject) return;
-  timer = { subjectId: selectedSubject, start: Date.now() };
-  save(TIMER_KEY, timer);
-  requestWake();
-  renderAll();
+  if (running()) return;
+  const subjectId = currentSubject();
+  if (!subjectId) return;
+  const now = Date.now();
+  db.timer = { running: true, subjectId, start: now, updated: now };
+  persist();
+  onTimerChanged();
+  sync();
 }
 
-function stopTimer() {
-  if (!timer) return;
+function pauseTimer() {
+  const t = running();
+  if (!t) return;
   const end = Date.now();
-  if (end - timer.start >= 1000) {
-    db.sessions.push({ id: uid(), subjectId: timer.subjectId, start: timer.start, end, updated: end });
-    persist();
+  if (end - t.start >= 1000) {
+    // The id comes from the start time, so if two devices both pause the same stretch they save one session, not two.
+    db.sessions.push({ id: `t${t.start.toString(36)}`, subjectId: t.subjectId, start: t.start, end, updated: end });
   }
-  timer = null;
-  save(TIMER_KEY, null);
-  try { wakeLock?.release(); } catch {}
-  wakeLock = null;
+  db.timer = { running: false, updated: end };
+  persist();
+  onTimerChanged();
+  sync();
+}
+
+function toggleTimer() {
+  enableMotion(true); // iOS only lets a page ask for the motion sensor from inside a tap
+  if (running()) pauseTimer(); else startTimer();
+}
+
+function onTimerChanged() {
+  keepAwake(!!running() || focusOpen);
+  if (!running()) document.title = 'Study Tracker';
   renderAll();
-  autoSync();
+  renderFocus();
+}
+
+// ---------- keep the screen on ----------
+// The Wake Lock API is the proper way. iOS Home Screen apps ignored it before iOS 18.4,
+// so there we also loop a silent 1-pixel video, which iOS treats as "media playing".
+let wakeLock = null;
+let wantAwake = false;
+const awakeVideo = $('keepAwake');
+
+async function keepAwake(on) {
+  wantAwake = on;
+  if (!on) {
+    try { await wakeLock?.release(); } catch {}
+    wakeLock = null;
+    awakeVideo.pause();
+    $('fHint').hidden = true;
+    return;
+  }
+  if (document.visibilityState !== 'visible') return;
+  let ok = false;
+  if ('wakeLock' in navigator) {
+    try {
+      if (!wakeLock || wakeLock.released) wakeLock = await navigator.wakeLock.request('screen');
+      ok = true;
+    } catch {}
+  }
+  if (!ok || navigator.standalone) {
+    try { await awakeVideo.play(); ok = true; } catch {}
+  }
+  $('fHint').hidden = ok || !focusOpen;
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { requestWake(); renderAll(); }
+  if (document.visibilityState === 'visible') {
+    keepAwake(wantAwake);
+    renderAll();
+    sync();
+  }
 });
+
+// ---------- focus screen ----------
+let focusOpen = false;
+let focusReason = null;        // 'manual' | 'tilt' | 'charger' | 'url'
+let dismissedWhileSideways = false;
+let controlsTimer = null;
+let driftTimer = null;
+
+function openFocus(reason) {
+  if (focusOpen) return;
+  focusOpen = true;
+  focusReason = reason;
+  const el = $('focus');
+  el.hidden = false;
+  requestAnimationFrame(() => el.classList.add('show'));
+  renderFocus();
+  keepAwake(true);
+  showControls();
+  drift();
+  driftTimer = setInterval(drift, 60e3);
+}
+
+function closeFocus() {
+  if (!focusOpen) return;
+  focusOpen = false;
+  focusReason = null;
+  clearInterval(driftTimer);
+  const el = $('focus');
+  el.classList.remove('show', 'controls');
+  setTimeout(() => { if (!focusOpen) el.hidden = true; }, 450);
+  keepAwake(!!running());
+  renderAll();
+}
+
+// Move the clock a few pixels every minute so a static image never burns into an OLED screen.
+function drift() {
+  const r = () => Math.round((Math.random() - 0.5) * 24);
+  $('fBody').style.transform = `translate(${r()}px, ${r()}px)`;
+}
+
+function showControls() {
+  $('focus').classList.add('controls');
+  clearTimeout(controlsTimer);
+  controlsTimer = setTimeout(() => $('focus').classList.remove('controls'), 4000);
+}
+
+function renderFocus() {
+  if (!focusOpen) return;
+  const t = running();
+  const sum = todaySummary();
+  $('focus').classList.toggle('paused', !t);
+  setText('fClock', fmtHMS(sum.total));
+  setText('fSubject', t ? subjectById(t.subjectId).name : 'Paused');
+  setText('fSub', t ? `This stretch ${fmtHMS(Date.now() - t.start)}` : `Max focus ${fmtHMS(sum.max)}`);
+  setText('fToggle', t ? 'Pause' : (sum.total ? 'Resume' : 'Start'));
+}
+
+$('focus').addEventListener('click', (e) => {
+  keepAwake(true); // a tap counts as permission to play the keep-awake video
+  if (e.target.closest('#fToggle')) { toggleTimer(); showControls(); return; }
+  if (e.target.closest('#fExit')) { if (focusReason === 'tilt') dismissedWhileSideways = true; closeFocus(); return; }
+  if ($('focus').classList.contains('controls')) $('focus').classList.remove('controls'); else showControls();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (!focusOpen) return;
+  if (e.key === 'Escape') closeFocus();
+  if (e.key === ' ') { e.preventDefault(); toggleTimer(); }
+});
+
+// --- turned sideways: the landscape media query covers phones without rotation lock,
+//     the motion sensor covers phones with rotation lock on.
+const landscapeMQ = matchMedia('(orientation: landscape) and (pointer: coarse)');
+let motionSideways = false;
+let motionCandidate = null;
+let motionSince = 0;
+let motionOn = false;
+
+function isSideways() { return landscapeMQ.matches || motionSideways; }
+
+function checkTilt() {
+  if (!isSideways()) {
+    dismissedWhileSideways = false;
+    if (focusOpen && focusReason === 'tilt') closeFocus();
+    return;
+  }
+  if (prefs.tilt && !focusOpen && !dismissedWhileSideways) openFocus('tilt');
+}
+landscapeMQ.addEventListener?.('change', checkTilt);
+
+function onMotion(e) {
+  const g = e.accelerationIncludingGravity;
+  if (!g || g.x == null) return;
+  const ax = Math.abs(g.x), ay = Math.abs(g.y);
+  let s = motionSideways;
+  if (ax > 7 && ax > ay * 1.5) s = true;          // gravity along the long edge: on its side
+  else if (ay > 7 && ay > ax * 1.5) s = false;    // upright again; lying flat keeps the last state
+  if (s !== motionCandidate) { motionCandidate = s; motionSince = Date.now(); return; }
+  if (s !== motionSideways && Date.now() - motionSince > 600) { motionSideways = s; checkTilt(); }
+}
+
+async function enableMotion(fromTap) {
+  if (motionOn || !prefs.tilt || !IS_TOUCH) return;
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+    if (!fromTap) return;
+    try { if (await DeviceMotionEvent.requestPermission() !== 'granted') return; } catch { return; }
+  }
+  window.addEventListener('devicemotion', onMotion);
+  motionOn = true;
+}
+// iOS needs a tap before it shows the motion permission (silently granted if allowed before).
+document.addEventListener('click', () => enableMotion(true), { once: true, capture: true });
+
+// --- on the charger: only Chromium browsers expose battery state; Safari does not.
+if (IS_TOUCH && navigator.getBattery) {
+  navigator.getBattery().then((b) => {
+    const check = () => {
+      if (b.charging && prefs.charger && running() && !focusOpen) openFocus('charger');
+      else if (!b.charging && focusOpen && focusReason === 'charger') closeFocus();
+    };
+    b.addEventListener('chargingchange', check);
+    check();
+  }).catch(() => {});
+}
 
 // ---------- views ----------
 let view = load(VIEW_KEY, 'timer');
 let dayCursor = dayKey(Date.now());
 let monthCursor = (() => { const d = keyToDate(dayCursor); return new Date(d.getFullYear(), d.getMonth(), 1); })();
 
+function movePill() {
+  const b = document.querySelector('#tabs button.active');
+  if (!b) return;
+  const pill = $('pill');
+  pill.style.left = `${b.offsetLeft}px`;
+  pill.style.width = `${b.offsetWidth}px`;
+  pill.style.top = `${b.offsetTop}px`;
+  pill.style.height = `${b.offsetHeight}px`;
+}
+
 function setView(v) {
   view = v;
   save(VIEW_KEY, v);
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
   document.querySelectorAll('.view').forEach((s) => s.classList.toggle('active', s.id === `view-${v}`));
+  movePill();
   renderAll();
+}
+window.addEventListener('resize', movePill);
+
+// A small slide when moving between days, weeks or months.
+function slide(dir) {
+  const el = document.querySelector('.view.active');
+  el?.animate?.([{ opacity: 0.3, transform: `translateX(${dir * 24}px)` }, { opacity: 1, transform: 'none' }],
+    { duration: 260, easing: 'cubic-bezier(.2,.8,.2,1)' });
 }
 
 function renderStrip() {
@@ -170,43 +372,54 @@ function renderStrip() {
   const from = new Date(d.getFullYear(), d.getMonth(), 1, DAY_START_HOUR).getTime();
   const to = new Date(d.getFullYear(), d.getMonth() + 1, 1, DAY_START_HOUR).getTime();
   const mon = d.toLocaleString('en', { month: 'short' });
-  $('monthTotal').textContent = `${mon}: ${fmtLong(summarize(from, to).total)}`;
+  setText('monthTotal', `${mon}: ${fmtLong(summarize(from, to).total)}`);
 }
 
+// Builds the timer view. Called on events only; tickTimer() updates the numbers every second.
 function renderTimer() {
-  const today = dayKey(Date.now());
-  const [from, to] = dayRange(today);
-  const sum = summarize(from, to);
-
-  $('clock').textContent = fmtHMS(timer ? Date.now() - timer.start : 0);
-  $('clock').classList.toggle('running', !!timer);
-  $('startBtn').disabled = !!timer;
-  $('stopBtn').disabled = !timer;
-  $('timerLabel').textContent = timer
-    ? `Studying ${subjectById(timer.subjectId).name} since ${fmtTime24(timer.start)}`
-    : 'Pick a subject and start';
-  $('wakeNote').textContent = timer && !('wakeLock' in navigator)
-    ? 'Your browser may lock the screen. The timer keeps counting anyway.' : '';
-  $('tToday').textContent = fmtHMS(sum.total);
-  $('tMax').textContent = fmtHMS(sum.max);
-  document.title = timer ? `${fmtHMS(Date.now() - timer.start)} · Study` : 'Study Tracker';
+  const t = running();
+  const sum = todaySummary();
+  const active = currentSubject();
 
   $('subjectChips').innerHTML = liveSubjects().map((s) =>
-    `<button class="chip ${s.id === (timer?.subjectId || selectedSubject) ? 'active' : ''}" data-subject="${esc(s.id)}" ${timer ? 'disabled' : ''}>
-      <i class="dot" style="background:${esc(s.color)}"></i>${esc(s.name)}</button>`).join('');
+    `<button class="chip ${s.id === active ? 'active' : ''}" data-subject="${esc(s.id)}" ${t ? 'disabled' : ''}>
+      <i class="dot" style="background:${esc(s.color)}"></i>${esc(s.name)}
+      <small data-chip-time="${esc(s.id)}">${fmtHM(sum.bySubject[s.id] || 0)}</small></button>`).join('');
 
   $('todaySessions').innerHTML = sum.list.slice().reverse().map((s) => {
     const sub = subjectById(s.subjectId);
-    const del = s.id === 'running' ? '<span class="muted small">running</span>'
+    const live = s.id === 'running';
+    const right = live ? '<span class="live">● live</span>'
       : `<button class="x" data-del="${esc(s.id)}" aria-label="Delete">×</button>`;
     return `<li><i class="dot" style="background:${esc(sub.color)}"></i>
-      <span class="grow">${esc(sub.name)} <span class="muted small">${fmtTime24(s.start)}–${fmtTime24(s.end)}</span></span>
-      <span>${fmtHMS(s.end - s.start)}</span>${del}</li>`;
+      <span class="grow">${esc(sub.name)} <span class="muted small">${fmtTime24(s.start)}–${live ? 'now' : fmtTime24(s.end)}</span></span>
+      <span ${live ? 'id="runningLen"' : ''}>${fmtHMS(s.end - s.start)}</span>${right}</li>`;
   }).join('') || '<li class="muted">No sessions yet today.</li>';
+
+  const btn = $('toggleBtn');
+  btn.textContent = t ? 'Pause' : (sum.total ? 'Resume' : 'Start');
+  btn.classList.toggle('pause', !!t);
 
   const opts = liveSubjects().map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('');
   if ($('mSubject').innerHTML !== opts) $('mSubject').innerHTML = opts;
-  if (!$('mDate').value) $('mDate').value = today;
+  if (!$('mDate').value) $('mDate').value = dayKey(Date.now());
+  tickTimer(sum);
+}
+
+function tickTimer(sum = todaySummary()) {
+  const t = running();
+  setText('clock', fmtHMS(sum.total));
+  $('clock').classList.toggle('running', !!t);
+  setText('tStretch', fmtHMS(t ? Date.now() - t.start : 0));
+  setText('tMax', fmtHMS(sum.max));
+  setText('timerLabel', t ? `Studying ${subjectById(t.subjectId).name} since ${fmtTime24(t.start)}`
+    : sum.total ? 'Paused' : 'Pick a subject and start');
+  if (t) {
+    const chip = document.querySelector(`[data-chip-time="${CSS.escape(t.subjectId)}"]`);
+    if (chip) chip.textContent = fmtHM(sum.bySubject[t.subjectId] || 0);
+    const run = $('runningLen');
+    if (run) run.textContent = fmtHMS(Date.now() - t.start);
+  }
 }
 
 // Cumulative minutes across a 5:00–5:00 day.
@@ -241,9 +454,9 @@ function renderCumChart(key) {
     <polyline points="${line(a)}" fill="none" stroke="#f0843a" stroke-width="3" stroke-linejoin="round"/>
     <circle cx="${lx}" cy="${ly}" r="6" fill="#1c1c1e" stroke="#f0843a" stroke-width="3"/>
     ${lbl(0, '5:00', 'start')}${lbl(W / 2, '17:00', 'middle')}${lbl(W, '5:00', 'end')}`;
-  const upTo = isToday ? new Date().getHours() : 4;
-  $('dUpTo').textContent = isToday ? `Up to ${upTo % 12 || 12} ${upTo < 12 ? 'AM' : 'PM'}` : 'Whole day';
-  $('dUpToVal').textContent = `+${fmtHMS(a.total)}`;
+  const upTo = new Date().getHours();
+  setText('dUpTo', isToday ? `Up to ${upTo % 12 || 12} ${upTo < 12 ? 'AM' : 'PM'}` : 'Whole day');
+  setText('dUpToVal', `+${fmtHMS(a.total)}`);
 }
 
 function breakdownHTML(bySubject, total) {
@@ -281,11 +494,11 @@ function renderDonut(bySubject, total) {
 function renderDay() {
   const [from, to] = dayRange(dayCursor);
   const sum = summarize(from, to);
-  $('dayTitle').textContent = keyToDate(dayCursor).toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
-  $('dTotal').textContent = fmtHMS(sum.total);
-  $('dMax').textContent = fmtHMS(sum.max);
-  $('dStart').textContent = sum.first ? fmtClock(sum.first) : '–';
-  $('dEnd').textContent = sum.last ? fmtClock(sum.last) : '–';
+  setText('dayTitle', keyToDate(dayCursor).toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' }));
+  setText('dTotal', fmtHMS(sum.total));
+  setText('dMax', fmtHMS(sum.max));
+  setText('dStart', sum.first ? fmtClock(sum.first) : '–');
+  setText('dEnd', sum.last ? fmtClock(sum.last) : '–');
   renderCumChart(dayCursor);
   renderDonut(sum.bySubject, sum.total);
   $('dBreak').innerHTML = breakdownHTML(sum.bySubject, sum.total);
@@ -307,9 +520,9 @@ function renderWeek() {
   const today = dayKey(Date.now());
   const elapsed = days.filter((k) => k <= today).length || 7;
   const fmtD = (k) => keyToDate(k).toLocaleDateString('en', { month: 'short', day: 'numeric' });
-  $('weekTitle').textContent = `${fmtD(days[0])} – ${fmtD(days[6])}`;
-  $('wTotal').textContent = fmtLong(total);
-  $('wAvg').textContent = fmtLong(total / elapsed);
+  setText('weekTitle', `${fmtD(days[0])} – ${fmtD(days[6])}`);
+  setText('wTotal', fmtLong(total));
+  setText('wAvg', fmtLong(total / elapsed));
 
   const W = 320, H = 160, top = 14, bw = 30, gap = (W - 7 * bw) / 7;
   const maxY = Math.max(...sums.map((s) => s.total), 2 * HOUR);
@@ -359,9 +572,9 @@ function renderMonth() {
     html += `<button class="d ${level(s.total)} ${key === today ? 'today' : ''}" data-day="${key}">${d}${s.total ? `<small>${fmtHM(s.total)}</small>` : ''}</button>`;
   }
   $('calendar').innerHTML = html;
-  $('monthTitle').textContent = monthCursor.toLocaleDateString('en', { month: 'long', year: 'numeric' });
-  $('mTotal').textContent = fmtLong(total);
-  $('mDays').textContent = studied;
+  setText('monthTitle', monthCursor.toLocaleDateString('en', { month: 'long', year: 'numeric' }));
+  setText('mTotal', fmtLong(total));
+  setText('mDays', String(studied));
   $('mBreak').innerHTML = breakdownHTML(bySubject, total);
 }
 
@@ -373,6 +586,9 @@ function renderSettings() {
   for (const [k, id] of [['owner', 'gOwner'], ['repo', 'gRepo'], ['path', 'gPath'], ['token', 'gToken']]) {
     if (document.activeElement !== $(id)) $(id).value = cfg[k] || '';
   }
+  $('pTilt').checked = prefs.tilt;
+  $('pCharger').checked = prefs.charger;
+  setText('focusUrl', `${location.origin}${location.pathname}?focus=1`);
 }
 
 function renderAll() {
@@ -382,6 +598,28 @@ function renderAll() {
   if (view === 'week') renderWeek();
   if (view === 'month') renderMonth();
   if (view === 'settings') renderSettings();
+}
+
+// Every second, change only the numbers that move. Rebuilding whole views every second made taps and scrolling stutter.
+let ticks = 0;
+let lastDay = dayKey(Date.now());
+function tick() {
+  ticks++;
+  const today = dayKey(Date.now());
+  if (today !== lastDay) { lastDay = today; renderAll(); return; } // crossed 5:00
+  if (!running()) return;
+  const t = running();
+  document.title = `${fmtHMS(Date.now() - t.start)} · Study`;
+  renderFocus();
+  if (view === 'timer') tickTimer();
+  if (view === 'day' && dayCursor === today) {
+    const sum = todaySummary();
+    setText('dTotal', fmtHMS(sum.total));
+    setText('dMax', fmtHMS(sum.max));
+    setText('dEnd', fmtClock(Date.now()));
+    setText('dUpToVal', `+${fmtHMS(sum.total)}`);
+  }
+  if (ticks % 30 === 0) { renderStrip(); if (view !== 'timer' && view !== 'settings') renderAll(); }
 }
 
 // ---------- events ----------
@@ -394,19 +632,19 @@ $('tabs').addEventListener('click', (e) => {
 
 $('subjectChips').addEventListener('click', (e) => {
   const b = e.target.closest('[data-subject]');
-  if (!b || timer) return;
+  if (!b || running()) return;
   selectedSubject = b.dataset.subject;
   save('st.subject', selectedSubject);
-  renderTimer();
+  document.querySelectorAll('#subjectChips .chip').forEach((c) => c.classList.toggle('active', c === b));
 });
-$('startBtn').onclick = startTimer;
-$('stopBtn').onclick = stopTimer;
+$('toggleBtn').onclick = toggleTimer;
+$('focusBtn').onclick = () => { enableMotion(true); openFocus('manual'); };
 
 $('todaySessions').addEventListener('click', (e) => {
   const id = e.target.closest('[data-del]')?.dataset.del;
   if (!id || !confirm('Delete this session?')) return;
   const s = db.sessions.find((x) => x.id === id);
-  if (s) { s.deleted = true; s.updated = Date.now(); persist(); renderAll(); autoSync(); }
+  if (s) { s.deleted = true; s.updated = Date.now(); persist(); renderAll(); sync(); }
 });
 
 $('manualForm').addEventListener('submit', (e) => {
@@ -421,18 +659,33 @@ $('manualForm').addEventListener('submit', (e) => {
   persist();
   e.target.reset();
   renderAll();
-  autoSync();
+  sync();
 });
 
-document.querySelectorAll('[data-shift]').forEach((b) => b.onclick = () => {
-  dayCursor = addDays(dayCursor, Number(b.dataset.shift)); renderDay();
-});
-document.querySelectorAll('[data-wshift]').forEach((b) => b.onclick = () => {
-  dayCursor = addDays(dayCursor, Number(b.dataset.wshift)); renderWeek();
-});
-document.querySelectorAll('[data-mshift]').forEach((b) => b.onclick = () => {
-  monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + Number(b.dataset.mshift), 1); renderMonth();
-});
+function shiftDay(n) { dayCursor = addDays(dayCursor, n); renderDay(); slide(-Math.sign(n)); }
+function shiftWeek(n) { dayCursor = addDays(dayCursor, n); renderWeek(); slide(-Math.sign(n)); }
+function shiftMonth(n) {
+  monthCursor = new Date(monthCursor.getFullYear(), monthCursor.getMonth() + n, 1);
+  renderMonth(); slide(-Math.sign(n));
+}
+document.querySelectorAll('[data-shift]').forEach((b) => b.onclick = () => shiftDay(Number(b.dataset.shift)));
+document.querySelectorAll('[data-wshift]').forEach((b) => b.onclick = () => shiftWeek(Number(b.dataset.wshift)));
+document.querySelectorAll('[data-mshift]').forEach((b) => b.onclick = () => shiftMonth(Number(b.dataset.mshift)));
+
+// Swipe left or right on Day, Week and Month to move through time.
+let touchX = null, touchY = null;
+$('main').addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; }, { passive: true });
+$('main').addEventListener('touchend', (e) => {
+  if (touchX == null) return;
+  const dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
+  touchX = null;
+  if (Math.abs(dx) < 60 || Math.abs(dy) > 40) return;
+  const dir = dx < 0 ? 1 : -1; // swipe left → forward in time
+  if (view === 'day') shiftDay(dir);
+  if (view === 'week') shiftWeek(7 * dir);
+  if (view === 'month') shiftMonth(dir);
+}, { passive: true });
+
 $('calendar').addEventListener('click', (e) => {
   const k = e.target.closest('[data-day]')?.dataset.day;
   if (k) { dayCursor = k; setView('day'); }
@@ -443,21 +696,26 @@ $('subjectForm').addEventListener('submit', (e) => {
   const name = $('newSubject').value.trim();
   if (!name) return;
   db.subjects.push({ id: uid(), name, color: $('newColor').value, updated: Date.now() });
-  persist(); e.target.reset(); renderAll(); autoSync();
+  persist(); e.target.reset(); renderAll(); sync();
 });
 $('subjectList').addEventListener('change', (e) => {
   const id = e.target.dataset.color;
   const s = id && db.subjects.find((x) => x.id === id);
-  if (s) { s.color = e.target.value; s.updated = Date.now(); persist(); autoSync(); }
+  if (s) { s.color = e.target.value; s.updated = Date.now(); persist(); sync(); }
 });
 $('subjectList').addEventListener('click', (e) => {
   const id = e.target.closest('[data-delsub]')?.dataset.delsub;
   if (!id || !confirm('Remove this subject? Its past sessions stay in your stats.')) return;
   const s = db.subjects.find((x) => x.id === id);
   s.deleted = true; s.updated = Date.now();
-  if (selectedSubject === id) selectedSubject = liveSubjects()[0]?.id;
-  persist(); renderAll(); autoSync();
+  persist(); renderAll(); sync();
 });
+
+$('pTilt').onchange = (e) => {
+  prefs.tilt = e.target.checked; save(PREFS_KEY, prefs);
+  if (prefs.tilt) enableMotion(true);
+};
+$('pCharger').onchange = (e) => { prefs.charger = e.target.checked; save(PREFS_KEY, prefs); };
 
 $('exportBtn').onclick = () => {
   const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
@@ -472,7 +730,7 @@ $('importFile').onchange = async (e) => {
   if (!f) return;
   try {
     db = merge(db, JSON.parse(await f.text()));
-    persist(); renderAll(); alert('Imported.'); autoSync();
+    persist(); onTimerChanged(); alert('Imported.'); sync();
   } catch { alert('That file is not a valid export.'); }
   e.target.value = '';
 };
@@ -487,10 +745,16 @@ function mergeList(a = [], b = []) {
   }
   return [...map.values()];
 }
+function newer(a, b) {
+  if (!a) return b || { running: false, updated: 0 };
+  if (!b) return a;
+  return (b.updated || 0) > (a.updated || 0) ? b : a;
+}
 function merge(a, b) {
   return {
     subjects: mergeList(a.subjects, b.subjects),
     sessions: mergeList(a.sessions, b.sessions).sort((x, y) => x.start - y.start),
+    timer: newer(a.timer, b.timer),
   };
 }
 
@@ -506,6 +770,7 @@ function b64decode(b64) {
 }
 
 let syncing = false;
+let syncAgain = false;
 const SYNC_DEFAULTS = { owner: 'VasanthKumarD1248', repo: 'study-tracker-data', path: 'sessions.json' };
 const SYNC_ERRORS = {
   401: 'GitHub rejected the token (401). Paste it again, or make a new one.',
@@ -520,10 +785,11 @@ async function sync() {
     status('Sync is not set up in this app yet. On iPhone, Safari and the Home Screen app keep separate settings, so enter the token here too.');
     return;
   }
-  if (syncing) return;
+  if (syncing) { syncAgain = true; return; } // a change came in mid-sync; run once more afterwards
   syncing = true;
   const url = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${(cfg.path || 'sessions.json').split('/').map(encodeURIComponent).join('/')}`;
   const headers = { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json' };
+  const timerBefore = JSON.stringify(db.timer);
   try {
     status('Syncing…');
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -551,20 +817,21 @@ async function sync() {
       });
       if (put.ok) break;
       if (put.status !== 409 && put.status !== 422) throw new Error(SYNC_ERRORS[put.status] || `GitHub said ${put.status} when saving.`);
-      // someone else pushed in between: loop and merge again
+      // another device saved in between: loop and merge again
     }
     const t = new Date();
     save(SYNC_KEY, { ...cfg, last: t.getTime() });
     status(`Last synced ${t.toLocaleString()}`);
-    renderAll();
+    if (JSON.stringify(db.timer) !== timerBefore) onTimerChanged(); // started or paused on another device
+    else renderAll();
   } catch (err) {
     const msg = err instanceof TypeError ? 'Could not reach GitHub. Check your connection.' : err.message;
     status(`Sync failed: ${msg}`);
   } finally {
     syncing = false;
+    if (syncAgain) { syncAgain = false; sync(); }
   }
 }
-function autoSync() { sync(); }
 
 $('syncForm').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -581,16 +848,22 @@ $('syncNow').onclick = sync;
 
 // ---------- boot ----------
 setView(view);
+requestAnimationFrame(movePill); // fonts and layout settle after the first frame
 {
   const last = load(SYNC_KEY, {}).last;
   if (last) $('syncStatus').textContent = `Last synced ${new Date(last).toLocaleString()}`;
 }
+const params = new URLSearchParams(location.search);
+if (params.has('focus')) {
+  history.replaceState(null, '', location.pathname);
+  openFocus('url');
+}
+keepAwake(!!running() || focusOpen);
+checkTilt();
+enableMotion(false);
 sync();
-requestWake();
-setInterval(() => {
-  if (timer) renderAll();          // live ticking
-  else if (view === 'timer') renderStrip();
-}, 1000);
+setInterval(tick, 1000);
+setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 120e3); // pick up a start or pause from another device
 window.addEventListener('focus', () => sync());
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

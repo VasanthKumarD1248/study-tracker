@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#111111">
+  <meta name="theme-color" content="#000000">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Study">
@@ -15,6 +15,7 @@
 </head>
 <body>
   <nav class="tabs" id="tabs">
+    <span class="pill" id="pill"></span>
     <button data-view="timer" class="active">Timer</button>
     <button data-view="day">Day</button>
     <button data-view="week">Week</button>
@@ -29,25 +30,22 @@
     <div id="monthTotal" class="muted"></div>
   </div>
 
-  <main>
+  <main id="main">
     <!-- TIMER -->
     <section id="view-timer" class="view active">
-      <div class="card center">
-        <div class="muted" id="timerLabel">Pick a subject and start</div>
+      <div class="card center hero">
+        <div class="muted" id="timerLabel"></div>
         <div class="clock" id="clock">0:00:00</div>
+        <div class="substats">
+          <div><span class="k">This stretch</span><span class="v" id="tStretch">0:00:00</span></div>
+          <div><span class="k">Max focus</span><span class="v" id="tMax">0:00:00</span></div>
+        </div>
         <div class="subjects" id="subjectChips"></div>
         <div class="row">
-          <button class="btn primary" id="startBtn">Start</button>
-          <button class="btn" id="stopBtn" disabled>Stop</button>
+          <button class="btn primary big" id="toggleBtn">Start</button>
+          <button class="btn ghost" id="focusBtn" aria-label="Open focus screen">⛶ Focus</button>
         </div>
-        <div class="muted small" id="wakeNote"></div>
-      </div>
-
-      <div class="card">
-        <div class="stats">
-          <div><div class="k">Today</div><div class="v" id="tToday">0:00:00</div></div>
-          <div><div class="k">Max focus</div><div class="v" id="tMax">0:00:00</div></div>
-        </div>
+        <div class="muted small" id="timerHint">Max focus is your longest stretch without pausing. Turn the phone sideways for the focus screen.</div>
       </div>
 
       <div class="card">
@@ -70,9 +68,9 @@
     <section id="view-day" class="view">
       <div class="card">
         <div class="nav">
-          <button class="btn icon" data-shift="-1">‹</button>
+          <button class="btn icon" data-shift="-1" aria-label="Previous day">‹</button>
           <h2 id="dayTitle"></h2>
-          <button class="btn icon" data-shift="1">›</button>
+          <button class="btn icon" data-shift="1" aria-label="Next day">›</button>
         </div>
         <div class="stats">
           <div><div class="k">Total study time</div><div class="v big" id="dTotal"></div></div>
@@ -103,9 +101,9 @@
     <section id="view-week" class="view">
       <div class="card">
         <div class="nav">
-          <button class="btn icon" data-wshift="-7">‹</button>
+          <button class="btn icon" data-wshift="-7" aria-label="Previous week">‹</button>
           <h2 id="weekTitle"></h2>
-          <button class="btn icon" data-wshift="7">›</button>
+          <button class="btn icon" data-wshift="7" aria-label="Next week">›</button>
         </div>
         <div class="stats">
           <div><div class="k">Week total</div><div class="v big" id="wTotal"></div></div>
@@ -122,9 +120,9 @@
     <section id="view-month" class="view">
       <div class="card">
         <div class="nav">
-          <button class="btn icon" data-mshift="-1">‹</button>
+          <button class="btn icon" data-mshift="-1" aria-label="Previous month">‹</button>
           <h2 id="monthTitle"></h2>
-          <button class="btn icon" data-mshift="1">›</button>
+          <button class="btn icon" data-mshift="1" aria-label="Next month">›</button>
         </div>
         <div class="stats">
           <div><div class="k">Month total</div><div class="v big" id="mTotal"></div></div>
@@ -139,6 +137,20 @@
 
     <!-- SETTINGS -->
     <section id="view-settings" class="view">
+      <div class="card">
+        <h3>Focus screen</h3>
+        <label class="switch"><input type="checkbox" id="pTilt"><span>Open when the phone is turned sideways</span></label>
+        <label class="switch"><input type="checkbox" id="pCharger"><span>Open when charging (Android and computers)</span></label>
+        <details>
+          <summary>iPhone: open it when you plug in the charger</summary>
+          <ol class="small muted steps">
+            <li>Open the <b>Shortcuts</b> app → <b>Automation</b> → <b>+</b> → <b>Charger</b> → <b>Is Connected</b> → choose <b>Run Immediately</b>.</li>
+            <li>Add the action <b>Open URLs</b> with<br><code id="focusUrl"></code></li>
+            <li>Done. Shortcuts opens the link in Safari, so enter your sync token in Safari too. The running timer syncs, so it shows there.</li>
+          </ol>
+        </details>
+      </div>
+
       <div class="card">
         <h3>Subjects</h3>
         <ul class="sessions" id="subjectList"></ul>
@@ -174,6 +186,22 @@
       </div>
     </section>
   </main>
+
+  <!-- Full-screen focus timer -->
+  <div class="focus" id="focus" hidden>
+    <div class="f-body" id="fBody">
+      <div class="f-subject" id="fSubject"></div>
+      <div class="f-clock" id="fClock">0:00:00</div>
+      <div class="f-sub" id="fSub"></div>
+    </div>
+    <div class="f-controls" id="fControls">
+      <button class="btn primary" id="fToggle">Pause</button>
+      <button class="btn" id="fExit">Exit</button>
+    </div>
+    <div class="f-hint" id="fHint" hidden>Tap once to keep the screen on</div>
+  </div>
+
+  <video id="keepAwake" src="keepawake.mp4" muted playsinline loop preload="auto" aria-hidden="true"></video>
 
   <script src="app.js"></script>
 </body>
