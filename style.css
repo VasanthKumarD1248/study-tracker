@@ -10,6 +10,9 @@
   --ease: cubic-bezier(.2, .8, .2, 1);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* Keep [hidden] winning over display rules like .focus { display: flex }; otherwise the
+   closed focus screen stays on top, invisible, and swallows every tap. */
+[hidden] { display: none !important; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body {
   font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;

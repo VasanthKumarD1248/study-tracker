@@ -789,6 +789,9 @@ async function sync() {
   syncing = true;
   const url = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${(cfg.path || 'sessions.json').split('/').map(encodeURIComponent).join('/')}`;
   const headers = { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json' };
+  // iOS can freeze a request when the app goes to the background; without a timeout,
+  // "syncing" would stay true and every later sync would be skipped.
+  const fetch = (u, opts = {}) => window.fetch(u, { ...opts, signal: AbortSignal.timeout(15000) });
   const timerBefore = JSON.stringify(db.timer);
   try {
     status('Syncing…');
@@ -825,7 +828,8 @@ async function sync() {
     if (JSON.stringify(db.timer) !== timerBefore) onTimerChanged(); // started or paused on another device
     else renderAll();
   } catch (err) {
-    const msg = err instanceof TypeError ? 'Could not reach GitHub. Check your connection.' : err.message;
+    const msg = err instanceof TypeError || err.name === 'TimeoutError' || err.name === 'AbortError'
+      ? 'Could not reach GitHub. Check your connection.' : err.message;
     status(`Sync failed: ${msg}`);
   } finally {
     syncing = false;
