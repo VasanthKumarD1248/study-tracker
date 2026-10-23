@@ -153,10 +153,10 @@
         <h3>Sync with GitHub</h3>
         <p class="muted small">Sessions are saved in this browser. To see the same data on your phone and laptop, sync them to a JSON file in a private repo. Use a fine-grained token that can only read and write that one repo (Contents: Read and write).</p>
         <form id="syncForm" class="form">
-          <label>Owner <input id="gOwner" placeholder="your-github-username"></label>
-          <label>Repo <input id="gRepo" placeholder="study-tracker-data"></label>
-          <label>File path <input id="gPath" placeholder="sessions.json"></label>
-          <label>Token <input id="gToken" type="password" placeholder="github_pat_…" autocomplete="off"></label>
+          <label>Owner <input id="gOwner" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <label>Repo <input id="gRepo" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <label>File path <input id="gPath" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+          <label>Token <input id="gToken" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
           <div class="row">
             <button class="btn primary" type="submit">Save &amp; sync</button>
             <button class="btn" type="button" id="syncNow">Sync now</button>

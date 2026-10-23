@@ -369,7 +369,7 @@ function renderSettings() {
   $('subjectList').innerHTML = liveSubjects().map((s) =>
     `<li><input type="color" value="${esc(s.color)}" data-color="${esc(s.id)}"><span class="grow">${esc(s.name)}</span>
      <button class="x" data-delsub="${esc(s.id)}" aria-label="Remove">×</button></li>`).join('');
-  const cfg = load(SYNC_KEY, {});
+  const cfg = { ...SYNC_DEFAULTS, ...load(SYNC_KEY, {}) };
   for (const [k, id] of [['owner', 'gOwner'], ['repo', 'gRepo'], ['path', 'gPath'], ['token', 'gToken']]) {
     if (document.activeElement !== $(id)) $(id).value = cfg[k] || '';
   }
@@ -506,13 +506,22 @@ function b64decode(b64) {
 }
 
 let syncing = false;
+const SYNC_DEFAULTS = { owner: 'VasanthKumarD1248', repo: 'study-tracker-data', path: 'sessions.json' };
+const SYNC_ERRORS = {
+  401: 'GitHub rejected the token (401). Paste it again, or make a new one.',
+  403: 'The token is missing a permission (403). It needs Contents: Read and write.',
+  404: 'GitHub cannot see that repo (404). Check owner and repo, and that the token includes this repo.',
+};
 
 async function sync() {
+  const status = (t) => { $('syncStatus').textContent = t; };
   const cfg = load(SYNC_KEY, {});
-  if (!cfg.owner || !cfg.repo || !cfg.token) return;
+  if (!cfg.owner || !cfg.repo || !cfg.token) {
+    status('Sync is not set up in this app yet. On iPhone, Safari and the Home Screen app keep separate settings, so enter the token here too.');
+    return;
+  }
   if (syncing) return;
   syncing = true;
-  const status = (t) => { $('syncStatus').textContent = t; };
   const url = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${(cfg.path || 'sessions.json').split('/').map(encodeURIComponent).join('/')}`;
   const headers = { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github+json' };
   try {
@@ -525,7 +534,11 @@ async function sync() {
         sha = j.sha;
         remote = JSON.parse(b64decode(j.content));
       } else if (res.status !== 404) {
-        throw new Error(`GitHub said ${res.status} when reading. Check owner, repo and token.`);
+        throw new Error(SYNC_ERRORS[res.status] || `GitHub said ${res.status} when reading.`);
+      } else {
+        // 404 can mean "file not created yet" or "repo not visible"; tell them apart.
+        const repo = await fetch(url.split('/contents/')[0], { headers, cache: 'no-store' });
+        if (!repo.ok) throw new Error(SYNC_ERRORS[repo.status] || `GitHub said ${repo.status} when reading the repo.`);
       }
       const merged = merge(db, remote);
       db = merged;
@@ -537,7 +550,7 @@ async function sync() {
         body: JSON.stringify({ message: `Sync ${new Date().toISOString()}`, content: b64encode(body), sha }),
       });
       if (put.ok) break;
-      if (put.status !== 409 && put.status !== 422) throw new Error(`GitHub said ${put.status} when saving.`);
+      if (put.status !== 409 && put.status !== 422) throw new Error(SYNC_ERRORS[put.status] || `GitHub said ${put.status} when saving.`);
       // someone else pushed in between: loop and merge again
     }
     const t = new Date();
@@ -545,7 +558,8 @@ async function sync() {
     status(`Last synced ${t.toLocaleString()}`);
     renderAll();
   } catch (err) {
-    status(`Sync failed: ${err.message}`);
+    const msg = err instanceof TypeError ? 'Could not reach GitHub. Check your connection.' : err.message;
+    status(`Sync failed: ${msg}`);
   } finally {
     syncing = false;
   }
@@ -555,10 +569,10 @@ function autoSync() { sync(); }
 $('syncForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const cfg = {
-    owner: $('gOwner').value.trim(),
-    repo: $('gRepo').value.trim(),
-    path: $('gPath').value.trim() || 'sessions.json',
-    token: $('gToken').value.trim(),
+    owner: $('gOwner').value.trim() || SYNC_DEFAULTS.owner,
+    repo: $('gRepo').value.trim() || SYNC_DEFAULTS.repo,
+    path: $('gPath').value.trim() || SYNC_DEFAULTS.path,
+    token: $('gToken').value.replace(/\s+/g, ''), // pasted tokens can carry spaces or line breaks
   };
   save(SYNC_KEY, cfg);
   sync();
